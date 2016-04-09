@@ -11,7 +11,7 @@ Parts used
 * Andrew James toaster oven
 * 3x Fotek SSR (25A, 350V)
 * Switched IEC C13 10A socket
-* Chassis mount fuse holder and fuse
+* Chassis mount fuse holder and 10A fuse
 * 16 button keypad (0-9A-D*#)
 * Gold heat shielding tape
 * Thermocouple probe (K)
