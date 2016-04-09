@@ -1,33 +1,47 @@
 #include <DSPI.h>
-#include <Timer.h>
 #include <Picadillo.h>
 #include <Framebuffer332.h>
 #include <ComfortAA.h>
-#include <Display7Seg.h>
+#include <Display7SegShadow.h>
 #include <Widgets.h>
-
 #include <Average.h>
+#include <EEPROM.h>
+#include <MonoIcon.h>
+#include <Brankic.h>
+#include <XTerm.h>
 
-struct profile {
-    int preheatTemp;
-    int preheatTime;
-    int reflowTemp;
-    int reflowTime;
-};
+// Rows - driven low
+const uint8_t KP_R0 = 26;
+const uint8_t KP_R1 = 27;
+const uint8_t KP_R2 = 28;
+const uint8_t KP_R3 = 29;
+// Columns - pulled high
+const uint8_t KP_C0 = 30;
+const uint8_t KP_C1 = 31;
+const uint8_t KP_C2 = 32;
+const uint8_t KP_C3 = 33;
+// Pullup resistor high pins for columns
+const uint8_t KP_P0 = 4;
+const uint8_t KP_P1 = 5;
+const uint8_t KP_P2 = 6;
+const uint8_t KP_P3 = 7;
 
-struct profile reflow = {
-    150, 120000, // 120 second preheat at 150 degrees
-    225, 10000   // 10 second reflow at 225 degrees
-};
+const uint8_t THERMO = 34;
+const uint8_t FAN = 35;
+const uint8_t HEAT_LOW = 36;
+const uint8_t HEAT_HIGH = 37;
 
 Picadillo tft;
 DSPI1 spi;
 AnalogTouch ts(LCD_XL, LCD_XR, LCD_YU, LCD_YD, 320, 480);
-uint8_t buf[320*100];
-Framebuffer332 fb(320, 100, buf);
+uint8_t buf[320*130];
+Framebuffer332 fb(320, 130, buf);
 
+const uint8_t rows[4] = {KP_R0, KP_R1, KP_R2, KP_R3};
+const uint8_t cols[4] = {KP_C0, KP_C1, KP_C2, KP_C3};
+const uint8_t pullup[4] = {KP_P0, KP_P1, KP_P2, KP_P3};
 
-Average<float> temperature(100); // 10 Seconds worth of data
+Average<float> temperature(10); // 1 Seconds worth of data
 Average<float> tlNow(320);
 Average<float> tlCav(320);
 
@@ -40,7 +54,8 @@ enum state {
     PREHEAT,
     RAMPING,
     REFLOW,
-    COOLING
+    COOLING,
+    BAKE
 };
 
 enum state phase = IDLE;
@@ -49,18 +64,31 @@ volatile float temperatureNow = 0;
 volatile uint32_t reflowStarted = 0;
 volatile uint32_t reflowDuration = 0;
 
-Timer4 mainControl;
+MonoIcon startButton(ts, tft, 8, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::ChartIncreasing, Color::Gray60, "Reflow", Fonts::XTerm, Color::White);
+MonoIcon bakeButton(ts, tft, 88, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::Oven, Color::Gray60, "Bake", Fonts::XTerm, Color::White);
+MonoIcon stopButton(ts, tft, 168, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::ErrorOpen, Color::Gray60, "Stop", Fonts::XTerm, Color::White);
+MonoIcon settingsButton(ts, tft, 248, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::Settings2, Color::Gray60, "Settings", Fonts::XTerm, Color::White);
 
-const uint8_t FAN = 35;
-const uint8_t HEAT_LOW = 36;
-const uint8_t HEAT_HIGH = 37;
+//twButton startButton(ts, tft,  0, 300, 160, 70, "REFLOW");
+//twButton stopButton(ts, tft,   0, 300, 320, 70, "STOP");
+//twButton bakeButton(ts, tft, 160, 300, 160, 70, "BAKE"); 
 
-twButton startButton(ts, tft, 0, 300, 320, 70, "START REFLOW");
-twButton stopButton(ts, tft, 0, 300, 320, 70, "STOP REFLOW");
+//twButton settingsButton(ts, tft, 0, 230, 160, 70, "SETTINGS");
 
-twButton fanState(ts, tft, 0, 200, 20, 20, "");
-twButton topState(ts, tft, 0, 220, 20, 20, "");
-twButton botState(ts, tft, 0, 240, 20, 20, "");
+twButton fanState(ts, tft, 20, 150, 20, 20, "");
+twButton topState(ts, tft, 20, 175, 20, 20, "");
+twButton botState(ts, tft, 20, 200, 20, 20, "");
+
+struct settings {
+    uint8_t fanEnabled;
+    uint8_t bakeTemperature;
+    uint8_t preheatTemperature;
+    uint8_t preheatTime;
+    uint8_t reflowTemperature;
+    uint8_t reflowTime;
+} __attribute__((packed));
+
+struct settings config;
 
 struct thermocouple {
     union {
@@ -85,7 +113,19 @@ struct thermocouple {
 
 void doStart(Event *e) {
     phase = WARMING;
-    stopButton.redraw();
+    stopButton.setEnabled(true);
+    startButton.setEnabled(false);
+    bakeButton.setEnabled(false);
+    reflowStarted = millis();
+    tlNow.clear();
+    tlCav.clear();
+}
+
+void doBake(Event *e) {
+    phase = BAKE;
+    stopButton.setEnabled(true);
+    startButton.setEnabled(false);
+    bakeButton.setEnabled(false);
     reflowStarted = millis();
     tlNow.clear();
     tlCav.clear();
@@ -93,12 +133,16 @@ void doStart(Event *e) {
 
 void doStop(Event *e) {
     phase = IDLE;
-    startButton.redraw();
+    stopButton.setEnabled(false);
+    startButton.setEnabled(true);
+    bakeButton.setEnabled(true);
 }
 
 void fanOn() {
-    digitalWrite(FAN, LOW);
-    fanState.setValue(1);
+    if (config.fanEnabled) {
+        digitalWrite(FAN, LOW);
+        fanState.setValue(1);
+    }
 }
 
 void fanOff() {
@@ -116,7 +160,6 @@ void topOff() {
     topState.setValue(0);
 }
 
-
 void botOn() {
     digitalWrite(HEAT_LOW, LOW);
     botState.setValue(1);
@@ -127,7 +170,274 @@ void botOff() {
     botState.setValue(0);
 }
 
+bool inSettings = false;
+
+twButton setPreTemp(ts, tft, 0, 30, 160, 50, "Preheat Temp");
+twButton setPreTime(ts, tft, 0, 80, 160, 50, "Preheat Time");
+twButton setRefTemp(ts, tft, 0, 130, 160, 50, "Reflow Temp");
+twButton setRefTime(ts, tft, 0, 180, 160, 50, "Reflow Time");
+twButton setBakeTemp(ts, tft, 0, 230, 160, 50, "Bake Temp");
+twButton setFan(ts, tft, 10, 295, 30, 30, "");
+twButton setReturn(ts, tft, 0, 410, 320, 70, "Save"); 
+
+void toggleFan(Event *e) {
+    config.fanEnabled = config.fanEnabled ? 0 : 1;
+    Serial.println(config.fanEnabled);
+    setFan.setValue(config.fanEnabled);
+    tft.println("Foo");
+    tft.println("Foo");
+    tft.println("Foo");
+    tft.println("Foo");
+}
+
+void setBack(Event *e) {
+    inSettings = false;
+}
+
+int setValueSelected = 0;
+
+void selectPreTemp(Event *e) {
+    setValueSelected = 1;
+    config.preheatTemperature = 0;
+}
+
+void selectPreTime(Event *e) {
+    setValueSelected = 2;
+    config.preheatTime = 0;
+}
+
+void selectRefTemp(Event *e) {
+    setValueSelected = 3;
+    config.reflowTemperature = 0;
+}
+
+void selectRefTime(Event *e) {
+    setValueSelected = 4;
+    config.reflowTime = 0;
+}
+
+void selectBakeTemp(Event *e) {
+    setValueSelected = 5;
+    config.bakeTemperature = 0;
+}
+
+void doSettings(Event *e) {
+    char temp[50];
+    setValueSelected = 0;
+    inSettings = true;
+    tft.fillScreen(Color::Black);
+    setPreTemp.redraw();
+    setPreTime.redraw();
+    setRefTemp.redraw();
+    setRefTime.redraw();
+    setBakeTemp.redraw();
+    setFan.redraw();
+    setReturn.redraw();
+    setPreTemp.setFont(Fonts::ComfortAA16);
+    setPreTime.setFont(Fonts::ComfortAA16);
+    setRefTemp.setFont(Fonts::ComfortAA16);
+    setRefTime.setFont(Fonts::ComfortAA16);
+    setBakeTemp.setFont(Fonts::ComfortAA16);
+    setFan.setValue(config.fanEnabled);
+    setFan.setBackgroundColor(Color::Red, Color::Green);
+    setFan.onTap(toggleFan);
+    setReturn.setBackgroundColor(Color::Green, Color::Green);
+    setReturn.setFont(Fonts::ComfortAA24);
+    setReturn.onTap(setBack);
+
+    setPreTemp.onTap(selectPreTemp);
+    setPreTime.onTap(selectPreTime);
+    setRefTemp.onTap(selectRefTemp);
+    setRefTime.onTap(selectRefTime);
+    setBakeTemp.onTap(selectBakeTemp);
+    
+    printAround("Settings", 160, 0, Color::Goldenrod, Fonts::ComfortAA24);
+    while (inSettings) {
+        ts.sample();
+        sprintf(temp, "%3d", config.preheatTemperature);
+        printAround(temp, 240, 30, setValueSelected == 1 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        sprintf(temp, "%3d", config.preheatTime);
+        printAround(temp, 240, 80, setValueSelected == 2 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        sprintf(temp, "%3d", config.reflowTemperature);
+        printAround(temp, 240, 130, setValueSelected == 3 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        sprintf(temp, "%3d", config.reflowTime);
+        printAround(temp, 240, 180, setValueSelected == 4 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        sprintf(temp, "%3d", config.bakeTemperature);
+        printAround(temp, 240, 230, setValueSelected == 5 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        setPreTemp.render();
+        setPreTime.render();
+        setRefTemp.render();
+        setRefTime.render();
+        setBakeTemp.render();
+        setFan.render();
+        tft.setCursor(50, 300);
+        tft.setFont(Fonts::ComfortAA24);
+        tft.setTextColor(Color::Goldenrod, Color::Black);
+        tft.print("Fan Enabled");
+        setReturn.render();
+        char kpval = scanKb();
+        if (kpval != 0) {
+            if (kpval == '#') {
+                setValueSelected = 0;
+            }
+            if (setValueSelected == 1) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.preheatTemperature *= 10;
+                    config.preheatTemperature += (kpval - '0');
+                }
+                if (kpval == '*') {
+                    config.preheatTemperature /= 10;
+                }
+            }
+            if (setValueSelected == 2) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.preheatTime *= 10;
+                    config.preheatTime += (kpval - '0');
+                }
+                if (kpval == '*') {
+                    config.preheatTime /= 10;
+                }
+            }
+            if (setValueSelected == 3) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.reflowTemperature *= 10;
+                    config.reflowTemperature += (kpval - '0');
+                }
+                if (kpval == '*') {
+                    config.reflowTemperature /= 10;
+                }
+            }
+            if (setValueSelected == 4) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.reflowTime *= 10;
+                    config.reflowTime += (kpval - '0');
+                }
+                if (kpval == '*') {
+                    config.reflowTime /= 10;
+                }
+            }
+            if (setValueSelected == 5) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.bakeTemperature *= 10;
+                    config.bakeTemperature += (kpval - '0');
+                }
+                if (kpval == '*') {
+                    config.bakeTemperature /= 10;
+                }
+            }
+        }
+    }
+    tft.fillScreen(Color::Black);
+//    if (phase == IDLE) {
+        startButton.redraw();
+        bakeButton.redraw();
+//    } else {
+        stopButton.redraw();
+//    }
+    settingsButton.redraw();
+    fanState.redraw();
+    topState.redraw();
+    botState.redraw();
+    saveSettings();
+}
+
+
+bool initKb() {
+    for (int r = 0; r < 4; r++) {
+        pinMode(rows[r], INPUT);    
+        pinMode(cols[r], INPUT);
+        pinMode(pullup[r], OUTPUT);
+        digitalWrite(pullup[r], HIGH);    
+    }
+}
+
+char scanKb() {
+    static uint32_t last = 0;
+    uint32_t out = 0;
+    for (int r = 0; r < 4; r++) {
+        pinMode(rows[r], OUTPUT);
+        digitalWrite(rows[r], LOW);
+        for (int c = 0; c < 4; c++) {
+            int v = digitalRead(cols[c]) == LOW;
+            v <<= c;
+            v <<= (r * 4);
+            out |= v;
+        }
+        pinMode(rows[r], INPUT);
+    }
+
+    // Find which have changed state
+    uint32_t xr = out ^ last;
+    uint32_t pressed = out & xr;
+
+    last = out;
+
+    if (pressed & 0x0001) return '1';
+    if (pressed & 0x0010) return '2';
+    if (pressed & 0x0100) return '3';
+    if (pressed & 0x1000) return 'A';
+    if (pressed & 0x0002) return '4';
+    if (pressed & 0x0020) return '5';
+    if (pressed & 0x0200) return '6';
+    if (pressed & 0x2000) return 'B';
+    if (pressed & 0x0004) return '7';
+    if (pressed & 0x0040) return '8';
+    if (pressed & 0x0400) return '9';
+    if (pressed & 0x4000) return 'C';
+    if (pressed & 0x0008) return '*';
+    if (pressed & 0x0080) return '0';
+    if (pressed & 0x0800) return '#';
+    if (pressed & 0x8000) return 'D';
+    return 0;
+}
+
+void loadSettings() {
+    uint8_t *s = (uint8_t *)&config;
+    for (int i = 0; i < sizeof(struct settings); i++) {
+        s[i] = EEPROM.read(i);
+    }
+}
+
+void saveSettings() {
+    uint8_t *s = (uint8_t *)&config;
+    for (int i = 0; i < sizeof(struct settings); i++) {
+        EEPROM.write(i, s[i]);
+    }
+}
+
+void iconFlasher(int id, void *tptr) {
+    static bool onoff = 0;
+    onoff = !onoff;
+    switch (phase) {
+        case IDLE:
+            startButton.setColor(Color::Green);
+            bakeButton.setColor(Color::Green);
+            stopButton.setColor(Color::Gray60);
+            settingsButton.setColor(Color::SkyBlue);
+            break;
+        case WARMING:
+        case PREHEAT:
+        case RAMPING:
+        case REFLOW:
+        case COOLING:
+            startButton.setColor(onoff ? Color::Red : Color::Green);
+            bakeButton.setColor(Color::Gray60);
+            stopButton.setColor(Color::Red);
+            settingsButton.setColor(Color::SkyBlue);
+            break;
+        case BAKE:            
+            bakeButton.setColor(onoff ? Color::Red : Color::Green);
+            startButton.setColor(Color::Gray60);
+            stopButton.setColor(Color::Red);
+            settingsButton.setColor(Color::SkyBlue);
+            break;
+    }
+}
+
 void setup() {
+    initKb();
+    Serial.begin(115200);
+    loadSettings();
     tft.initializeDevice();
     tft.fillScreen(Color::Black);
     ts.initializeDevice();
@@ -136,8 +446,8 @@ void setup() {
     ts.offsetY(5);
     fb.initializeDevice();
     spi.begin();
-    pinMode(34, OUTPUT);
-    digitalWrite(34, HIGH);
+    pinMode(THERMO, OUTPUT);
+    digitalWrite(THERMO, HIGH);
     pinMode(FAN, OPEN);
     pinMode(HEAT_LOW, OPEN);
     pinMode(HEAT_HIGH, OPEN);
@@ -145,17 +455,21 @@ void setup() {
     topOff();
     botOff();
 
+    settingsButton.onTap(doSettings);
+//    settingsButton.setBackgroundColor(Color::SkyBlue, Color::SkyBlue);
+    settingsButton.setFont(Fonts::ComfortAA24);
+
     startButton.onTap(doStart);
-    startButton.setBackgroundColor(Color::Green, Color::Green);
+//    startButton.setBackgroundColor(Color::Green, Color::Green);
     startButton.setFont(Fonts::ComfortAA24);
 
-    stopButton.onTap(doStop);
-    stopButton.setBackgroundColor(Color::Red, Color::Red);
-    stopButton.setFont(Fonts::ComfortAA24);
+    bakeButton.onTap(doBake);
+//    bakeButton.setBackgroundColor(Color::Green, Color::Green);
+    bakeButton.setFont(Fonts::ComfortAA24);
 
-    mainControl.attachInterrupt(timeTicker);
-    mainControl.setFrequency(10);
-    mainControl.start();
+    stopButton.onTap(doStop);
+//    stopButton.setBackgroundColor(Color::Red, Color::Red);
+    stopButton.setFont(Fonts::ComfortAA24);
 
     fanState.setBackgroundColor(Color::Gray20, Color::Green);
     topState.setBackgroundColor(Color::Gray20, Color::Green);
@@ -164,48 +478,59 @@ void setup() {
     fanState.setBevel(0);
     topState.setBevel(0);
     botState.setBevel(0);
-        
+
+    createTask(timeTicker, 100, TASK_ENABLE, NULL);
+    createTask(iconFlasher, 250, TASK_ENABLE, NULL);        
+}
+
+static inline void printAround(const char *txt, int x, int y, color_t color, const uint8_t *font) {
+    tft.setTextColor(color, Color::Black);
+    tft.setFont(font);
+    int w = tft.stringWidth(txt);
+    tft.setCursor(x - w/2, y);
+    tft.print(txt);
 }
 
 void loop() {
+    char temp[50];
     ts.sample();
     
 
-    tft.setCursor(0, 0);
-    tft.setTextColor(Color::Goldenrod, Color::Black);
-    tft.setFont(Fonts::ComfortAA24);
-    tft.println("Oven Temperature:");
+    printAround("Oven", 80, 20, Color::Goldenrod, Fonts::ComfortAA24);
+    printAround("Cavity", 240, 20, Color::Goldenrod, Fonts::ComfortAA24);
 
-    tft.setCursor(150, 30);
-    tft.setFont(Fonts::Display7Seg48);
-    tft.setTextColor(Color::Red, Color::Black);
-    tft.printf("%7.2f", temperatureNow);
+    sprintf(temp, "%6.2f", temperatureNow);
+    printAround(temp, 80, 60, Color::Red, Fonts::Display7SegShadow48);
 
-    tft.setCursor(0, 90);
-    tft.setTextColor(Color::Goldenrod, Color::Black);
-    tft.setFont(Fonts::ComfortAA24);
-    tft.println("Cavity Temperature:");
+    color_t ccol = Color::Green;
 
-    tft.setCursor(150, 120);
-    tft.setFont(Fonts::Display7Seg48);
     if (internalTemperature > 80) {
-        tft.setTextColor(Color::Red, Color::Black);
+        ccol = Color::Red;
     } else if (internalTemperature > 65) {
-        tft.setTextColor(Color::Yellow, Color::Black);
-    } else {
-        tft.setTextColor(Color::Green, Color::Black);
+        ccol = Color::Yellow;
     }
     
-    tft.printf("%7.2f", internalTemperature);
-    if (phase == IDLE) {
-        startButton.render();
-    } else {
-        stopButton.render();
-    }
+    sprintf(temp, "%6.2f", internalTemperature);
+    printAround(temp, 240, 60, ccol, Fonts::Display7SegShadow48);
+
+    stopButton.render();
+    startButton.render();
+    bakeButton.render();
+    settingsButton.render();
+
 
     fanState.render();
     topState.render();
     botState.render();
+
+    tft.setFont(Fonts::ComfortAA24);
+    tft.setTextColor(Color::Goldenrod, Color::Goldenrod);
+    tft.setCursor(50, 150); 
+    tft.print("Fan");
+    tft.setCursor(50, 175); 
+    tft.print("Top Heater");
+    tft.setCursor(50, 200); 
+    tft.print("Bottom Heater");
 
     tft.setTextColor(Color::Goldenrod, Color::Black);
     tft.setFont(Fonts::ComfortAA24);
@@ -214,16 +539,16 @@ void loop() {
     fb.fillScreen(Color::Black);
 
 
-    char temp[50];
+    
     switch (phase) {
         case IDLE: sprintf(temp, "Idle"); break;
-        case WARMING: sprintf(temp, "Warming: %4d", reflow.preheatTemp); break;
-        case PREHEAT: sprintf(temp, "Preheat: %4d", ((reflow.preheatTime - (millis() - phaseStarted)) / 1000)); break;
-        case RAMPING: sprintf(temp, "Heating: %4d", reflow.reflowTemp); break;
-        case REFLOW: sprintf(temp, "Reflow: %4d", ((reflow.reflowTime - (millis() - phaseStarted)) / 1000)); break;
+        case WARMING: sprintf(temp, "Warming: %4d", config.preheatTemperature); break;
+        case PREHEAT: sprintf(temp, "Preheat: %4d", (((config.preheatTime * 1000) - (millis() - phaseStarted)) / 1000)); break;
+        case RAMPING: sprintf(temp, "Heating: %4d", config.reflowTemperature); break;
+        case REFLOW: sprintf(temp, "Reflow: %4d", (((config.reflowTime * 1000) - (millis() - phaseStarted)) / 1000)); break;
         case COOLING: sprintf(temp, "Cooling:   50"); break;
+        case BAKE: sprintf(temp, "Baking:  %4d", config.bakeTemperature); break;
     }
-
 
     fb.setTextColor(Color::Goldenrod, Color::Goldenrod);
     fb.setFont(Fonts::ComfortAA24);
@@ -249,7 +574,7 @@ void loop() {
         if ((a <= 0.01) || (b <= 0.01)) {
             continue;
         }
-        fb.drawLine(i, 100 - a, i+1, 100 - b, Color::Green);
+        fb.drawLine(i, 100 - a, i+1, 100 - b, Color::DarkGreen);
         a = tlNow.get(i) / 3.0;
         b = tlNow.get(i+1) / 3.0;
         if ((a <= 0.01) || (b <= 0.01)) {
@@ -257,20 +582,20 @@ void loop() {
         }
         fb.drawLine(i, 100 - a, i+1, 100 - b, Color::White);
     }
-    fb.setCursor(160 - w/2, 99 - h);
+    fb.setCursor(160 - w/2, 129 - h);
     fb.print(temp);
-    fb.draw(tft, 0, 379);
+    fb.draw(tft, 0, 260);
 }
 
-void __USER_ISR timeTicker() {
+void timeTicker(int id, void *tptr) {
     static int tlTick = 0;
     struct thermocouple tData;
-    digitalWrite(34, LOW);
+    digitalWrite(THERMO, LOW);
     tData.b4 = spi.transfer((uint8_t)0x00);
     tData.b3 = spi.transfer((uint8_t)0x00);
     tData.b2 = spi.transfer((uint8_t)0x00);
     tData.b1 = spi.transfer((uint8_t)0x00);
-    digitalWrite(34, HIGH);
+    digitalWrite(THERMO, HIGH);
     temperatureNow = tData.tdata * 0.25;
     temperature.push(temperatureNow);
     internalTemperature = tData.idata * 0.0625;
@@ -292,21 +617,14 @@ void __USER_ISR timeTicker() {
             topOff();
             botOff();
             break;
+
         case WARMING:
             fanOn();
+            fanOn();
+            botOn();
+            topOn();
             
-            if (predicted < reflow.preheatTemp) {
-                botOn();
-            } else {
-                botOff();
-            }
-            if (predicted < (reflow.preheatTemp - 1)) {
-                topOn();
-            } else {
-                topOff();
-            }
-
-            if (predicted >= reflow.preheatTemp) {
+            if (predicted >= config.preheatTemperature) {
                 phaseStarted = millis();
                 phase = PREHEAT;
             }
@@ -315,17 +633,17 @@ void __USER_ISR timeTicker() {
 
         case PREHEAT:
             fanOn();
-            if (predicted < reflow.preheatTemp) {
+            if (predicted < config.preheatTemperature) {
                 botOn();
             } else {
                 botOff();
             }
-            if (predicted < (reflow.preheatTemp - 1)) {
+            if (predicted < (config.preheatTemperature - 1)) {
                 topOn();
             } else {
                 topOff();
             }
-            if (millis() - phaseStarted >= reflow.preheatTime) {
+            if (millis() - phaseStarted >= (config.preheatTime * 1000)) {
                 phase = RAMPING;
                 phaseStarted = millis();
             }
@@ -333,17 +651,10 @@ void __USER_ISR timeTicker() {
 
         case RAMPING:
             fanOn();
-            if (predicted < reflow.reflowTemp) {
-                botOn();
-            } else {
-                botOff();
-            }
-            if (predicted < (reflow.reflowTemp - 1)) {
-                topOn();
-            } else {
-                topOff();
-            }
-            if (predicted >= reflow.reflowTemp) {
+            botOn();
+            topOn();
+
+            if (predicted >= config.reflowTemperature) {
                 phaseStarted = millis();
                 phase = REFLOW;
             }
@@ -351,21 +662,20 @@ void __USER_ISR timeTicker() {
             break;
         case REFLOW:
             fanOn();
-            if (predicted < reflow.reflowTemp) {
+            if (predicted < config.reflowTemperature) {
                 botOn();
-            } else {
-                botOff();
-            }
-            if (predicted < (reflow.reflowTemp - 1)) {
                 topOn();
             } else {
+                botOff();
                 topOff();
             }
-            if (millis() - phaseStarted >= reflow.reflowTime) {
+
+            if (millis() - phaseStarted >= (config.reflowTime * 1000)) {
                 phase = COOLING;
                 phaseStarted = millis();
             }
             break;
+            
         case COOLING:
             fanOn();
             topOff();
@@ -376,8 +686,23 @@ void __USER_ISR timeTicker() {
                 phase = IDLE;            
             }
             break;
+
+        case BAKE:
+            fanOn();
+            if (predicted < config.bakeTemperature) {
+                botOn();
+            } else {
+                botOff();
+            }
+            if (predicted < config.bakeTemperature-1) {
+                topOn();
+            } else {
+                topOff();
+            }
+
+            break;
+
     }
 
     
-    clearIntFlag(_TIMER_4_IRQ);
 }
