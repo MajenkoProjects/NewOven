@@ -53,6 +53,9 @@ to be plugged in for programming.
 Connect the earth of the power socket to
 the casing of the oven.
 
+The inside of the main oven cavity is
+lined with the gold tape.
+
 Thermocouple enters the main oven from 
 the rear and is routed round the back and
 in to the side cavity.
