@@ -55,6 +55,7 @@ enum state {
 	RAMPING,
 	REFLOW,
 	COOLING,
+    FASTCOOL,
 	BAKE
 };
 
@@ -79,6 +80,16 @@ twButton fanState(ts, tft, 20, 150, 20, 20, "");
 twButton topState(ts, tft, 20, 175, 20, 20, "");
 twButton botState(ts, tft, 20, 200, 20, 20, "");
 
+bool inSettings = false;
+
+twButton setPreTemp(ts, tft, 0, 30, 160, 50, "Preheat Temp");
+twButton setPreTime(ts, tft, 0, 80, 160, 50, "Preheat Time");
+twButton setRefTemp(ts, tft, 0, 130, 160, 50, "Reflow Temp");
+twButton setRefTime(ts, tft, 0, 180, 160, 50, "Reflow Time");
+twButton setBakeTemp(ts, tft, 0, 230, 160, 50, "Bake Temp");
+twButton setMeltTemp(ts, tft, 0, 280, 160, 50, "Melt Temp");
+twButton setFan(ts, tft, 10, 345, 30, 30, "");
+twButton setReturn(ts, tft, 0, 410, 320, 70, "Save");
 struct settings {
 	uint8_t fanEnabled;
 	uint16_t bakeTemperature;
@@ -86,6 +97,7 @@ struct settings {
 	uint16_t preheatTime;
 	uint16_t reflowTemperature;
 	uint16_t reflowTime;
+    uint16_t meltTemperature;
 } __attribute__((packed));
 
 struct settings config;
@@ -110,6 +122,14 @@ struct thermocouple {
 		} __attribute__((packed));
 	} __attribute__((packed));
 };
+
+const char *alertText = NULL;
+uint32_t alertCount = 0;
+
+void alert(const char *text) {
+    alertCount = 100;
+    alertText = text;
+}
 
 void doStart(Event *e) {
 	phase = WARMING;
@@ -170,15 +190,7 @@ void botOff() {
 	botState.setValue(0);
 }
 
-bool inSettings = false;
 
-twButton setPreTemp(ts, tft, 0, 30, 160, 50, "Preheat Temp");
-twButton setPreTime(ts, tft, 0, 80, 160, 50, "Preheat Time");
-twButton setRefTemp(ts, tft, 0, 130, 160, 50, "Reflow Temp");
-twButton setRefTime(ts, tft, 0, 180, 160, 50, "Reflow Time");
-twButton setBakeTemp(ts, tft, 0, 230, 160, 50, "Bake Temp");
-twButton setFan(ts, tft, 10, 295, 30, 30, "");
-twButton setReturn(ts, tft, 0, 410, 320, 70, "Save");
 
 void toggleFan(Event *e) {
 	config.fanEnabled = config.fanEnabled ? 0 : 1;
@@ -221,6 +233,11 @@ void selectBakeTemp(Event *e) {
 	config.bakeTemperature = 0;
 }
 
+void selectMeltTemp(Event *e) {
+    setValueSelected = 6;
+    config.meltTemperature = 0;
+}
+
 void doSettings(Event *e) {
 	char temp[50];
 	setValueSelected = 0;
@@ -231,6 +248,7 @@ void doSettings(Event *e) {
 	setRefTemp.redraw();
 	setRefTime.redraw();
 	setBakeTemp.redraw();
+    setMeltTemp.redraw();
 	setFan.redraw();
 	setReturn.redraw();
 	setPreTemp.setFont(Fonts::ComfortAA16);
@@ -238,6 +256,7 @@ void doSettings(Event *e) {
 	setRefTemp.setFont(Fonts::ComfortAA16);
 	setRefTime.setFont(Fonts::ComfortAA16);
 	setBakeTemp.setFont(Fonts::ComfortAA16);
+    setMeltTemp.setFont(Fonts::ComfortAA16);
 	setFan.setValue(config.fanEnabled);
 	setFan.setBackgroundColor(Color::Red, Color::Green);
 	setFan.onTap(toggleFan);
@@ -249,6 +268,7 @@ void doSettings(Event *e) {
 	setRefTemp.onTap(selectRefTemp);
 	setRefTime.onTap(selectRefTime);
 	setBakeTemp.onTap(selectBakeTemp);
+    setMeltTemp.onTap(selectMeltTemp);
 	printAround("Settings", 160, 0, Color::Goldenrod, Fonts::ComfortAA24);
 
 	while (inSettings) {
@@ -263,13 +283,16 @@ void doSettings(Event *e) {
 		printAround(temp, 240, 180, setValueSelected == 4 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
 		sprintf(temp, "%3d", config.bakeTemperature);
 		printAround(temp, 240, 230, setValueSelected == 5 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
+        sprintf(temp, "%3d", config.meltTemperature);
+        printAround(temp, 240, 280, setValueSelected == 6 ? Color::Red : Color::White, Fonts::Display7SegShadow48);
 		setPreTemp.render();
 		setPreTime.render();
 		setRefTemp.render();
 		setRefTime.render();
 		setBakeTemp.render();
+        setMeltTemp.render();
 		setFan.render();
-		tft.setCursor(50, 300);
+		tft.setCursor(50, 350);
 		tft.setFont(Fonts::ComfortAA24);
 		tft.setTextColor(Color::Goldenrod, Color::Black);
 		tft.print("Fan Enabled");
@@ -340,7 +363,19 @@ void doSettings(Event *e) {
 					config.bakeTemperature /= 10;
 				}
 			}
-		}
+
+            if (setValueSelected == 6) {
+                if (kpval >= '0' && kpval <= '9') {
+                    config.meltTemperature *= 10;
+                    config.meltTemperature += (kpval - '0');
+                    config.meltTemperature %= 1000;
+                }
+
+                if (kpval == '*') {
+                    config.meltTemperature /= 10;
+                }
+            }
+}
 	}
 
 	tft.fillScreen(Color::Black);
@@ -469,6 +504,7 @@ void loadSettings() {
 	config.reflowTemperature %= 1000;
 	config.reflowTime %= 1000;
 	config.bakeTemperature %= 1000;
+    config.meltTemperature %= 1000;
 }
 
 void saveSettings() {
@@ -496,6 +532,7 @@ void iconFlasher(int id, void *tptr) {
 		case RAMPING:
 		case REFLOW:
 		case COOLING:
+        case FASTCOOL:
 			startButton.setColor(onoff ? Color::Red : Color::Green);
 			bakeButton.setColor(Color::Gray60);
 			stopButton.setColor(Color::Red);
@@ -562,6 +599,9 @@ static inline void printAround(const char *txt, int x, int y, color_t color, con
 }
 
 void loop() {
+    static uint32_t alertBlink = millis();
+    static bool alertBlinkColor = false;
+    
 	char temp[50];
 	ts.sample();
 	printAround("Oven", 80, 20, Color::Goldenrod, Fonts::ComfortAA24);
@@ -620,8 +660,12 @@ void loop() {
 			break;
 
 		case COOLING:
-			sprintf(temp, "Cooling:   50");
+			sprintf(temp, "Cooling: %4d", config.meltTemperature);
 			break;
+
+        case FASTCOOL:
+            sprintf(temp, "Cooling:   50");
+            break;
 
 		case BAKE:
 			sprintf(temp, "Baking:  %4d", config.bakeTemperature);
@@ -640,6 +684,8 @@ void loop() {
 		}
 
 		fb.setPixel(i, 99, Color::Gray60);
+        fb.setPixel(i, 100 - config.preheatTemperature/divs, Color::Yellow);
+        fb.setPixel(i, 100 - config.reflowTemperature/divs, Color::Red);
 	}
 
 	for (int i = 0; i < 320; i += 12) {
@@ -667,6 +713,22 @@ void loop() {
 
 	fb.setCursor(160 - w / 2, 129 - h);
 	fb.print(temp);
+
+    if (alertCount > 0 && alertText != NULL) {
+        if (millis() - alertBlink >= 500) {
+            alertBlink = millis();
+            alertBlinkColor = !alertBlinkColor;
+            fb.setFont(Fonts::ComfortAA24);
+            fb.setTextColor(alertBlinkColor ? Color::Red : Color::Yellow,
+                            alertBlinkColor ? Color::Red : Color::Yellow);
+            w = fb.stringWidth(alertText);
+            h = fb.stringHeight(alertText);
+            fb.setCursor(160 - w/2, 50 - h/2);
+            fb.print(alertText);
+            alertCount--;
+        }
+    }
+ 
 	fb.draw(tft, 0, 260);
 }
 
@@ -766,7 +828,19 @@ void timeTicker(int id, void *tptr) {
 
 			break;
 
-		case COOLING:
+        case COOLING:
+            fanOn();
+            topOff();
+            botOff();
+
+            if (predicted <= config.meltTemperature) {
+                phase = FASTCOOL;
+                alert("OPEN THE DOOR");
+            }
+
+            break;
+
+		case FASTCOOL:
 			fanOn();
 			topOff();
 			botOff();
