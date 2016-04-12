@@ -31,6 +31,9 @@ const uint8_t FAN = 35;
 const uint8_t HEAT_LOW = 36;
 const uint8_t HEAT_HIGH = 37;
 
+const uint8_t AUDENB = 8;
+const uint8_t AUDIO = 9;
+
 Picadillo tft;
 DSPI1 spi;
 AnalogTouch ts(LCD_XL, LCD_XR, LCD_YU, LCD_YD, 320, 480);
@@ -131,7 +134,22 @@ void alert(const char *text) {
     alertText = text;
 }
 
+void pip() {
+    tone(AUDIO, 1000, 100);
+}
+
+void click() {
+    pinMode(AUDIO, OUTPUT);
+    delay(1);
+    digitalWrite(AUDIO, LOW);
+    delay(1);
+    digitalWrite(AUDIO, HIGH);
+    delay(1);
+    digitalWrite(AUDIO, LOW);
+}
+
 void doStart(Event *e) {
+    click();
 	phase = WARMING;
 	stopButton.setEnabled(true);
 	startButton.setEnabled(false);
@@ -142,6 +160,7 @@ void doStart(Event *e) {
 }
 
 void doBake(Event *e) {
+    click();
 	phase = BAKE;
 	stopButton.setEnabled(true);
 	startButton.setEnabled(false);
@@ -152,6 +171,7 @@ void doBake(Event *e) {
 }
 
 void doStop(Event *e) {
+    click();
 	phase = IDLE;
 	stopButton.setEnabled(false);
 	startButton.setEnabled(true);
@@ -203,42 +223,50 @@ void toggleFan(Event *e) {
 }
 
 void setBack(Event *e) {
+    click();
 	inSettings = false;
 }
 
 int setValueSelected = 0;
 
 void selectPreTemp(Event *e) {
+    click();
 	setValueSelected = 1;
 	config.preheatTemperature = 0;
 }
 
 void selectPreTime(Event *e) {
+    click();
 	setValueSelected = 2;
 	config.preheatTime = 0;
 }
 
 void selectRefTemp(Event *e) {
+    click();
 	setValueSelected = 3;
 	config.reflowTemperature = 0;
 }
 
 void selectRefTime(Event *e) {
+    click();
 	setValueSelected = 4;
 	config.reflowTime = 0;
 }
 
 void selectBakeTemp(Event *e) {
+    click();
 	setValueSelected = 5;
 	config.bakeTemperature = 0;
 }
 
 void selectMeltTemp(Event *e) {
+    click();
     setValueSelected = 6;
     config.meltTemperature = 0;
 }
 
 void doSettings(Event *e) {
+    click();
 	char temp[50];
 	setValueSelected = 0;
 	inSettings = true;
@@ -300,6 +328,7 @@ void doSettings(Event *e) {
 		char kpval = scanKb();
 
 		if (kpval != 0) {
+    click();
 			if (kpval == '#') {
 				setValueSelected = 0;
 			}
@@ -549,6 +578,9 @@ void iconFlasher(int id, void *tptr) {
 }
 
 void setup() {
+    pinMode(AUDENB, OUTPUT);
+    digitalWrite(AUDENB, HIGH);
+    
 	initKb();
 	Serial.begin(115200);
 	loadSettings();
@@ -725,6 +757,7 @@ void loop() {
             h = fb.stringHeight(alertText);
             fb.setCursor(160 - w/2, 50 - h/2);
             fb.print(alertText);
+            tone(AUDIO, alertBlinkColor ? 1000 : 500, 500);
             alertCount--;
         }
     }
@@ -772,6 +805,7 @@ void timeTicker(int id, void *tptr) {
 			if (predicted >= config.preheatTemperature) {
 				phaseStarted = millis();
 				phase = PREHEAT;
+                pip();
 			}
 
 			break;
@@ -792,6 +826,7 @@ void timeTicker(int id, void *tptr) {
 			}
 
 			if (millis() - phaseStarted >= (config.preheatTime * 1000)) {
+                pip();
 				phase = RAMPING;
 				phaseStarted = millis();
 			}
@@ -804,6 +839,7 @@ void timeTicker(int id, void *tptr) {
 			topOn();
 
 			if (predicted >= config.reflowTemperature) {
+                pip();
 				phaseStarted = millis();
 				phase = REFLOW;
 			}
@@ -822,6 +858,7 @@ void timeTicker(int id, void *tptr) {
 			}
 
 			if (millis() - phaseStarted >= (config.reflowTime * 1000)) {
+                pip();
 				phase = COOLING;
 				phaseStarted = millis();
 			}
@@ -834,6 +871,7 @@ void timeTicker(int id, void *tptr) {
             botOff();
 
             if (predicted <= config.meltTemperature) {
+                pip();
                 phase = FASTCOOL;
                 alert("OPEN THE DOOR");
             }
@@ -846,6 +884,7 @@ void timeTicker(int id, void *tptr) {
 			botOff();
 
 			if (predicted <= 50) {
+                pip();
 				doStop(NULL);
 				fanOff();
 				phase = IDLE;
