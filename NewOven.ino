@@ -130,7 +130,7 @@ const char *alertText = NULL;
 uint32_t alertCount = 0;
 
 void alert(const char *text) {
-    alertCount = 100;
+    alertCount = 10;
     alertText = text;
 }
 
@@ -743,16 +743,16 @@ void loop() {
         if (millis() - alertBlink >= 500) {
             alertBlink = millis();
             alertBlinkColor = !alertBlinkColor;
-            fb.setFont(Fonts::ComfortAA24);
-            fb.setTextColor(alertBlinkColor ? Color::Red : Color::Yellow,
-                            alertBlinkColor ? Color::Red : Color::Yellow);
-            w = fb.stringWidth(alertText);
-            h = fb.stringHeight(alertText);
-            fb.setCursor(160 - w/2, 50 - h/2);
-            fb.print(alertText);
             tone(AUDIO, alertBlinkColor ? 1000 : 500, 500);
             alertCount--;
         }
+        fb.setFont(Fonts::ComfortAA24);
+        fb.setTextColor(alertBlinkColor ? Color::Red : Color::Yellow,
+                        alertBlinkColor ? Color::Red : Color::Yellow);
+        w = fb.stringWidth(alertText);
+        h = fb.stringHeight(alertText);
+        fb.setCursor(160 - w/2, 50 - h/2);
+        fb.print(alertText);
     }
  
 	fb.draw(tft, 0, 260);
