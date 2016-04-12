@@ -210,16 +210,9 @@ void botOff() {
 	botState.setValue(0);
 }
 
-
-
 void toggleFan(Event *e) {
 	config.fanEnabled = config.fanEnabled ? 0 : 1;
-	Serial.println(config.fanEnabled);
 	setFan.setValue(config.fanEnabled);
-	tft.println("Foo");
-	tft.println("Foo");
-	tft.println("Foo");
-	tft.println("Foo");
 }
 
 void setBack(Event *e) {
@@ -582,7 +575,7 @@ void setup() {
     digitalWrite(AUDENB, HIGH);
     
 	initKb();
-	Serial.begin(115200);
+	
 	loadSettings();
 	tft.initializeDevice();
 	tft.fillScreen(Color::Black);
