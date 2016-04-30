@@ -89,6 +89,7 @@ twButton setBakeTemp(ts, tft, 0, 230, 160, 50, "Bake Temp");
 twButton setMeltTemp(ts, tft, 0, 280, 160, 50, "Melt Temp");
 twButton setFan(ts, tft, 10, 345, 30, 30, "");
 twButton setReturn(ts, tft, 0, 410, 320, 70, "Save");
+
 struct settings {
 	uint8_t fanEnabled;
 	uint16_t bakeTemperature;
@@ -128,17 +129,18 @@ uint32_t alertCount = 0;
 uint32_t tuneTick = 0;
 
 void informPlayTune() {
-    playTune = true;
+	playTune = true;
 }
 
 void doPlayTune() {
-    if (playTune) {
-        for (int i = 0; i < 10; i++) {
-            pip();
-            delay(100);
-        }
-        playTune = false;
-    }
+	if (playTune) {
+		for (int i = 0; i < 10; i++) {
+			pip();
+			delay(100);
+		}
+
+		playTune = false;
+	}
 }
 
 void alert(const char *text) {
@@ -767,8 +769,7 @@ void loop() {
 	}
 
 	fb.draw(tft, 0, 260);
-
-    doPlayTune();
+	doPlayTune();
 }
 
 void timeTicker(int id, void *tptr) {
@@ -890,7 +891,7 @@ void timeTicker(int id, void *tptr) {
 			botOff();
 
 			if (predicted <= 50) {
-                informPlayTune();
+				informPlayTune();
 				doStop(NULL);
 				fanOff();
 				phase = IDLE;
