@@ -44,7 +44,7 @@ const uint8_t rows[4] = {KP_R0, KP_R1, KP_R2, KP_R3};
 const uint8_t cols[4] = {KP_C0, KP_C1, KP_C2, KP_C3};
 const uint8_t pullup[4] = {KP_P0, KP_P1, KP_P2, KP_P3};
 
-Average<float> temperature(10); // 1 Seconds worth of data
+Average<float> temperature(30); // 3 Seconds worth of data
 Average<float> tlNow(320);
 Average<float> tlCav(320);
 
@@ -67,17 +67,13 @@ volatile uint32_t phaseStarted = 0;
 volatile float temperatureNow = 0;
 volatile uint32_t reflowStarted = 0;
 volatile uint32_t reflowDuration = 0;
+volatile bool playTune = false;
+int tunePos = 0;
 
 MonoIcon startButton(ts, tft, 8, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::ChartIncreasing, Color::Gray60, "Reflow", Fonts::XTerm, Color::White);
 MonoIcon bakeButton(ts, tft, 88, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::Oven, Color::Gray60, "Bake", Fonts::XTerm, Color::White);
 MonoIcon stopButton(ts, tft, 168, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::ErrorOpen, Color::Gray60, "Stop", Fonts::XTerm, Color::White);
 MonoIcon settingsButton(ts, tft, 248, 408, 64, 64, MonoIcon::MonoIconBG, Brankic::Settings2, Color::Gray60, "Settings", Fonts::XTerm, Color::White);
-
-//twButton startButton(ts, tft,  0, 300, 160, 70, "REFLOW");
-//twButton stopButton(ts, tft,   0, 300, 320, 70, "STOP");
-//twButton bakeButton(ts, tft, 160, 300, 160, 70, "BAKE");
-
-//twButton settingsButton(ts, tft, 0, 230, 160, 70, "SETTINGS");
 
 twButton fanState(ts, tft, 20, 150, 20, 20, "");
 twButton topState(ts, tft, 20, 175, 20, 20, "");
@@ -128,6 +124,22 @@ struct thermocouple {
 
 const char *alertText = NULL;
 uint32_t alertCount = 0;
+
+uint32_t tuneTick = 0;
+
+void informPlayTune() {
+    playTune = true;
+}
+
+void doPlayTune() {
+    if (playTune) {
+        for (int i = 0; i < 10; i++) {
+            pip();
+            delay(100);
+        }
+        playTune = false;
+    }
+}
 
 void alert(const char *text) {
 	alertCount = 10;
@@ -629,7 +641,7 @@ void loop() {
 	ts.sample();
 	printAround("Oven", 80, 20, Color::Goldenrod, Fonts::ComfortAA24);
 	printAround("Cavity", 240, 20, Color::Goldenrod, Fonts::ComfortAA24);
-	sprintf(temp, "%6.2f", temperatureNow);
+	sprintf(temp, "%6.2f", temperature.mode());
 	printAround(temp, 80, 60, Color::Red, Fonts::Display7SegShadow48);
 	color_t ccol = Color::Green;
 
@@ -755,6 +767,8 @@ void loop() {
 	}
 
 	fb.draw(tft, 0, 260);
+
+    doPlayTune();
 }
 
 void timeTicker(int id, void *tptr) {
@@ -769,14 +783,14 @@ void timeTicker(int id, void *tptr) {
 	temperatureNow = tData.tdata * 0.25;
 	temperature.push(temperatureNow);
 	internalTemperature = tData.idata * 0.0625;
-	float predicted = temperatureNow; //temperature.predict(50);
+	float predicted = temperature.mode();
 	tlTick++;
 
 	if (tlTick == 50) {
 		tlTick = 0;
 
 		if (phase != IDLE) {
-			tlNow.push(temperatureNow);
+			tlNow.push(predicted);
 			tlCav.push(internalTemperature);
 		}
 	}
@@ -876,7 +890,7 @@ void timeTicker(int id, void *tptr) {
 			botOff();
 
 			if (predicted <= 50) {
-				pip();
+                informPlayTune();
 				doStop(NULL);
 				fanOff();
 				phase = IDLE;
